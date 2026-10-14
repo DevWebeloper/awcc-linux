@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Alienware Mode & Turbo
+Comment=Control Alienware power profiles, thermal modes, and CPU turbo boost
+Exec=/home/alienware/Projects/alienfx-linux-main/Example-App/run_gui.sh
+Icon=alienware-mode-control
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;
+StartupNotify=true
+Keywords=alienware;fan;power;profile;turbo;boost;quiet;performance;gmode;

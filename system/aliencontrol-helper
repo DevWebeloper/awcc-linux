@@ -1,0 +1,421 @@
+#!/bin/bash
+# aliencontrol-helper
+# Must live at /usr/local/bin/aliencontrol-helper, owned by root, mode 755.
+# Only ever invoked via the sudoers rule set up for it. Every value is
+# validated against a hard safety range before anything is written.
+
+set -e
+
+is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+is_signed_int() { [[ "$1" =~ ^-?[0-9]+$ ]]; }
+
+find_hwmon_by_name() {
+    for d in /sys/class/hwmon/hwmon*; do
+        if [ -f "$d/name" ] && [ "$(cat "$d/name")" = "$1" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_amdgpu_device() {
+    for d in /sys/class/drm/card*/device; do
+        if [ -f "$d/pp_od_clk_voltage" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+usage() {
+    echo "Usage: aliencontrol-helper <profile|cpugov|cpuboost|cpuclock|cpuminclock|cpuepp|fanboost|gpupower|gpuod|gpuvolt|gpuodreset|gpuperf|gpuprofile|psr|ping> ..." >&2
+    exit 1
+}
+
+case "$1" in
+    ping)
+        exit 0
+        ;;
+
+    profile)
+        # ACPI platform profile: cool quiet balanced balanced-performance performance custom
+        shift
+        VAL="$1"
+        [ -n "$VAL" ] || { echo "profile name required" >&2; exit 1; }
+        PROFILE_CHOICES=/sys/firmware/acpi/platform_profile_choices
+        PROFILE_PATH=/sys/firmware/acpi/platform_profile
+        [ -f "$PROFILE_CHOICES" ] || { echo "platform_profile not supported on this machine" >&2; exit 1; }
+        VALID=0
+        for choice in $(cat "$PROFILE_CHOICES"); do
+            if [ "$choice" = "$VAL" ]; then
+                VALID=1
+                break
+            fi
+        done
+        [ "$VALID" = 1 ] || { echo "Invalid platform profile: $VAL" >&2; exit 1; }
+        echo "$VAL" > "$PROFILE_PATH"
+        ;;
+
+    cpugov)
+        # Scaling governor for cpufreq policies
+        shift
+        GOV="$1"
+        [ -n "$GOV" ] || { echo "governor required" >&2; exit 1; }
+        POLICIES=(/sys/devices/system/cpu/cpufreq/policy*/scaling_governor)
+        [ -e "${POLICIES[0]}" ] || { echo "no cpufreq policies on this machine" >&2; exit 1; }
+        P0=$(dirname "${POLICIES[0]}")
+        AVAIL="$P0/scaling_available_governors"
+        if [ -f "$AVAIL" ]; then
+            VALID=0
+            for g in $(cat "$AVAIL"); do
+                if [ "$g" = "$GOV" ]; then
+                    VALID=1
+                    break
+                fi
+            done
+            [ "$VALID" = 1 ] || { echo "Invalid governor: $GOV" >&2; exit 1; }
+        fi
+        for p in "${POLICIES[@]}"; do
+            [ -e "$p" ] || continue
+            echo "$GOV" > "$p"
+        done
+        ;;
+
+    cpuboost)
+        # Turbo/boost on or off, through cpufreq.
+        shift
+        VAL="$1"
+        [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
+            echo "cpuboost takes 0 (off) or 1 (on), got: $VAL" >&2; exit 1; }
+        GLOBAL=/sys/devices/system/cpu/cpufreq/boost
+        if [ -e "$GLOBAL" ]; then
+            echo "$VAL" > "$GLOBAL"
+            exit 0
+        fi
+        WROTE=0
+        for p in /sys/devices/system/cpu/cpufreq/policy*/boost; do
+            [ -e "$p" ] || continue
+            echo "$VAL" > "$p"
+            WROTE=1
+        done
+        if [ "$WROTE" = 0 ]; then
+            echo "no cpufreq boost control on this machine" >&2
+            exit 1
+        fi
+        ;;
+
+    cpuclock)
+        # Ceiling on core clock, in kHz, written to every cpufreq policy.
+        shift
+        VAL="$1"
+        POLICIES=(/sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq)
+        [ -e "${POLICIES[0]}" ] || {
+            echo "no cpufreq policies on this machine" >&2; exit 1; }
+        P0=$(dirname "${POLICIES[0]}")
+        HW_MAX=$(cat "$P0/cpuinfo_max_freq")
+        if [ "$VAL" = "max" ]; then
+            VAL="$HW_MAX"
+        else
+            is_int "$VAL" || { echo "Invalid clock (kHz): $VAL" >&2; exit 1; }
+            HW_MIN=$(cat "$P0/cpuinfo_min_freq")
+            [ "$VAL" -le "$HW_MAX" ] || {
+                echo "clock $VAL kHz above this CPU's maximum ($HW_MAX)" >&2; exit 1; }
+            [ "$VAL" -ge "$HW_MIN" ] || {
+                echo "clock $VAL kHz below this CPU's minimum ($HW_MIN)" >&2; exit 1; }
+            for m in /sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq; do
+                [ -e "$m" ] || continue
+                CUR_MIN=$(cat "$m")
+                if [ "$CUR_MIN" -gt "$VAL" ]; then
+                    echo "$VAL" > "$m"
+                fi
+            done
+        fi
+        for f in "${POLICIES[@]}"; do
+            [ -e "$f" ] || continue
+            echo "$VAL" > "$f"
+        done
+        ;;
+
+    cpuminclock)
+        # Floor under the core clock, in kHz, written to every cpufreq policy.
+        shift
+        VAL="$1"
+        POLICIES=(/sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq)
+        [ -e "${POLICIES[0]}" ] || {
+            echo "no cpufreq policies on this machine" >&2; exit 1; }
+        P0=$(dirname "${POLICIES[0]}")
+        HW_MIN=$(cat "$P0/cpuinfo_min_freq")
+        HW_MAX=$(cat "$P0/cpuinfo_max_freq")
+        RESTORE=0
+        if [ "$VAL" = "min" ]; then
+            RESTORE=1
+        else
+            is_int "$VAL" || { echo "Invalid clock (kHz): $VAL" >&2; exit 1; }
+            [ "$VAL" -le "$HW_MAX" ] || {
+                echo "floor $VAL kHz above this CPU's maximum ($HW_MAX)" >&2; exit 1; }
+            [ "$VAL" -ge "$HW_MIN" ] || {
+                echo "floor $VAL kHz below this CPU's minimum ($HW_MIN)" >&2; exit 1; }
+        fi
+        for f in "${POLICIES[@]}"; do
+            [ -e "$f" ] || continue
+            D=$(dirname "$f")
+            if [ "$RESTORE" = 1 ]; then
+                if [ -r "$D/amd_pstate_lowest_nonlinear_freq" ]; then
+                    THIS=$(cat "$D/amd_pstate_lowest_nonlinear_freq")
+                else
+                    THIS=$(cat "$D/cpuinfo_min_freq")
+                fi
+            else
+                THIS="$VAL"
+                if [ -r "$D/scaling_max_freq" ]; then
+                    CUR_MAX=$(cat "$D/scaling_max_freq")
+                    if [ "$CUR_MAX" -lt "$THIS" ]; then
+                        echo "$THIS" > "$D/scaling_max_freq"
+                    fi
+                fi
+            fi
+            echo "$THIS" > "$f"
+        done
+        ;;
+
+    cpuepp)
+        # Energy Performance Preference (EPP)
+        shift
+        VAL="$1"
+        [ -n "$VAL" ] || { echo "EPP value required" >&2; exit 1; }
+        POLICIES=(/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference)
+        [ -e "${POLICIES[0]}" ] || {
+            echo "no cpufreq EPP controls on this machine" >&2; exit 1; }
+        P0=$(dirname "${POLICIES[0]}")
+        AVAIL="$P0/energy_performance_available_preferences"
+        if [ -f "$AVAIL" ]; then
+            VALID=0
+            for pref in $(cat "$AVAIL"); do
+                if [ "$pref" = "$VAL" ]; then
+                    VALID=1
+                    break
+                fi
+            done
+            [ "$VALID" = 1 ] || { echo "Invalid EPP preference: $VAL" >&2; exit 1; }
+        fi
+        for f in "${POLICIES[@]}"; do
+            [ -e "$f" ] || continue
+            echo "$VAL" > "$f"
+        done
+        ;;
+
+    fanboost)
+        # Write fan boost 0-255 to alienware_wmi
+        shift
+        CHAN="$1"
+        VAL="$2"
+        is_int "$CHAN" || { echo "Invalid fan channel: $CHAN" >&2; exit 1; }
+        is_int "$VAL" || { echo "Invalid fan boost: $VAL" >&2; exit 1; }
+        [ "$CHAN" -ge 1 ] && [ "$CHAN" -le 4 ] || {
+            echo "fan channel out of range (1-4): $CHAN" >&2; exit 1; }
+        [ "$VAL" -ge 0 ] && [ "$VAL" -le 255 ] || {
+            echo "fan boost out of range (0-255): $VAL" >&2; exit 1; }
+        HWMON=$(find_hwmon_by_name alienware_wmi) || {
+            echo "alienware_wmi hwmon not found" >&2; exit 1; }
+        TARGET="$HWMON/fan${CHAN}_boost"
+        [ -f "$TARGET" ] || { echo "Fan boost node not found: $TARGET" >&2; exit 1; }
+        echo "$VAL" > "$TARGET"
+        ;;
+
+    gpupower)
+        # Write GPU power cap in µW to amdgpu hwmon power1_cap
+        shift
+        VAL="$1"
+        is_int "$VAL" || { echo "Invalid GPU power value: $VAL" >&2; exit 1; }
+        HWMON=$(find_hwmon_by_name amdgpu) || {
+            echo "amdgpu hwmon not found" >&2; exit 1; }
+        CAP_FILE="$HWMON/power1_cap"
+        [ -f "$CAP_FILE" ] || { echo "power1_cap not available" >&2; exit 1; }
+        MIN=$(cat "$HWMON/power1_cap_min" 2>/dev/null || echo 120000000)
+        MAX=$(cat "$HWMON/power1_cap_max" 2>/dev/null || echo 130000000)
+        [ "$VAL" -ge "$MIN" ] && [ "$VAL" -le "$MAX" ] || {
+            echo "power cap $VAL µW out of range ($MIN - $MAX)" >&2; exit 1; }
+        echo "$VAL" > "$CAP_FILE"
+        ;;
+
+    gpuod)
+        # Set OverDrive SCLK or MCLK ceiling: gpuod <s|m> <level> <MHz>
+        shift
+        TYPE="$1"
+        LEVEL="$2"
+        MHZ="$3"
+        [ "$TYPE" = "s" ] || [ "$TYPE" = "m" ] || {
+            echo "gpuod type must be 's' or 'm', got: $TYPE" >&2; exit 1; }
+        is_int "$LEVEL" || { echo "Invalid level: $LEVEL" >&2; exit 1; }
+        is_int "$MHZ" || { echo "Invalid MHz: $MHZ" >&2; exit 1; }
+        DEV=$(find_amdgpu_device) || { echo "amdgpu device not found" >&2; exit 1; }
+        OD_FILE="$DEV/pp_od_clk_voltage"
+        [ -f "$OD_FILE" ] || { echo "pp_od_clk_voltage not found" >&2; exit 1; }
+        
+        # Range check against OD_RANGE
+        if [ "$TYPE" = "s" ]; then
+            [ "$MHZ" -ge 255 ] && [ "$MHZ" -le 2660 ] || {
+                echo "SCLK MHz $MHZ out of range (255-2660)" >&2; exit 1; }
+        else
+            [ "$MHZ" -ge 97 ] && [ "$MHZ" -le 1200 ] || {
+                echo "MCLK MHz $MHZ out of range (97-1200)" >&2; exit 1; }
+        fi
+        echo "$TYPE $LEVEL $MHZ" > "$OD_FILE"
+        echo "c" > "$OD_FILE"
+        ;;
+
+    gpuvolt)
+        # Set VDDGFX voltage offset in mV (-100 to 0)
+        shift
+        VAL="$1"
+        is_signed_int "$VAL" || { echo "Invalid voltage offset (mV): $VAL" >&2; exit 1; }
+        [ "$VAL" -ge -100 ] && [ "$VAL" -le 0 ] || {
+            echo "voltage offset $VAL mV out of range (-100 to 0)" >&2; exit 1; }
+        DEV=$(find_amdgpu_device) || { echo "amdgpu device not found" >&2; exit 1; }
+        OD_FILE="$DEV/pp_od_clk_voltage"
+        [ -f "$OD_FILE" ] || { echo "pp_od_clk_voltage not found" >&2; exit 1; }
+        echo "vo $VAL" > "$OD_FILE"
+        echo "c" > "$OD_FILE"
+        ;;
+
+    gpuodreset)
+        # Reset OverDrive settings
+        DEV=$(find_amdgpu_device) || { echo "amdgpu device not found" >&2; exit 1; }
+        OD_FILE="$DEV/pp_od_clk_voltage"
+        [ -f "$OD_FILE" ] || { echo "pp_od_clk_voltage not found" >&2; exit 1; }
+        echo "r" > "$OD_FILE"
+        echo "c" > "$OD_FILE"
+        ;;
+
+    gpuperf)
+        # Set power_dpm_force_performance_level: auto low high manual
+        shift
+        VAL="$1"
+        case "$VAL" in
+            auto|low|high|manual) ;;
+            *) echo "Invalid perf level: $VAL" >&2; exit 1 ;;
+        esac
+        DEV=$(find_amdgpu_device) || { echo "amdgpu device not found" >&2; exit 1; }
+        PERF_FILE="$DEV/power_dpm_force_performance_level"
+        [ -f "$PERF_FILE" ] || { echo "power_dpm_force_performance_level not found" >&2; exit 1; }
+        echo "$VAL" > "$PERF_FILE"
+        ;;
+
+    gpuprofile)
+        # Set pp_power_profile_mode: 0-7
+        shift
+        VAL="$1"
+        is_int "$VAL" || { echo "Invalid power profile mode: $VAL" >&2; exit 1; }
+        [ "$VAL" -ge 0 ] && [ "$VAL" -le 7 ] || {
+            echo "power profile mode out of range (0-7): $VAL" >&2; exit 1; }
+        DEV=$(find_amdgpu_device) || { echo "amdgpu device not found" >&2; exit 1; }
+        PMODE_FILE="$DEV/pp_power_profile_mode"
+        [ -f "$PMODE_FILE" ] || { echo "pp_power_profile_mode not found" >&2; exit 1; }
+        echo "$VAL" > "$PMODE_FILE"
+        ;;
+
+    psr)
+        # AMD panel self-refresh, managed via dcdebugmask in bootloader
+        shift
+        VAL="$1"
+        [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
+            echo "psr takes 0 (disabled) or 1 (enabled), got: $VAL" >&2; exit 1; }
+
+        LIMINE_DEFAULT=/etc/default/limine
+        [ -f "$LIMINE_DEFAULT" ] || {
+            echo "no $LIMINE_DEFAULT on this machine, so the bootloader is not Limine" >&2
+            exit 1; }
+        command -v limine-update >/dev/null 2>&1 || {
+            echo "limine-update is not installed" >&2; exit 1; }
+        command -v limine-enroll-config >/dev/null 2>&1 || {
+            echo "limine-enroll-config is not installed" >&2; exit 1; }
+
+        # Extract current dcdebugmask value if any
+        CUR_HEX=$(grep -oE 'amdgpu\.dcdebugmask=0x[0-9a-fA-F]+' "$LIMINE_DEFAULT" | head -1 | cut -d= -f2 || true)
+        if [ -n "$CUR_HEX" ]; then
+            CUR_VAL=$((CUR_HEX))
+        else
+            CUR_VAL=0
+        fi
+
+        # PSR disable mask: 0x610 (0x10 | 0x200 | 0x400)
+        PSR_MASK=1552 # 0x610 in decimal
+
+        if [ "$VAL" = "0" ]; then
+            # Disabled requested: bitwise OR with 0x610
+            NEW_VAL=$((CUR_VAL | PSR_MASK))
+            WANT=disabled
+        else
+            # Enabled requested: clear 0x610 bits
+            NEW_VAL=$((CUR_VAL & ~PSR_MASK))
+            WANT=enabled
+        fi
+
+        if [ "$CUR_VAL" -eq "$NEW_VAL" ]; then
+            echo "already $WANT"
+            exit 0
+        fi
+
+        BACKUP="${LIMINE_DEFAULT}.aliencontrol.bak"
+        cp -p "$LIMINE_DEFAULT" "$BACKUP" || {
+            echo "could not back up $LIMINE_DEFAULT; nothing was changed" >&2
+            exit 1; }
+
+        TMP=$(mktemp "${LIMINE_DEFAULT}.aliencontrol.XXXXXX") || {
+            echo "could not create a temporary file next to $LIMINE_DEFAULT" >&2
+            exit 1; }
+        trap 'rm -f "$TMP"' EXIT
+
+        NEW_HEX=$(printf '0x%x' "$NEW_VAL")
+        if [ "$NEW_VAL" -gt 0 ]; then
+            NEW_TOKEN="amdgpu.dcdebugmask=$NEW_HEX"
+            if [ -n "$CUR_HEX" ]; then
+                # Replace existing dcdebugmask
+                sed -e "/^KERNEL_CMDLINE\[default\]+=/{
+                            s/amdgpu\.dcdebugmask=0x[0-9a-fA-F]\+/${NEW_TOKEN}/
+                        }" "$LIMINE_DEFAULT" > "$TMP"
+            else
+                # Append to line
+                awk -v param="$NEW_TOKEN" '
+                    /^KERNEL_CMDLINE\[default\]\+=/ && !done {
+                        sub(/"$/, " " param "\"", $0); done = 1; print; next
+                    }
+                    { print }
+                    END { if (!done) exit 3 }
+                ' "$LIMINE_DEFAULT" > "$TMP"
+            fi
+        else
+            # Remove dcdebugmask completely
+            sed -e "/^KERNEL_CMDLINE\[default\]+=/{
+                        s/ *amdgpu\.dcdebugmask=0x[0-9a-fA-F]\+//
+                        s/  */ /g
+                    }" "$LIMINE_DEFAULT" > "$TMP"
+        fi
+
+        cat "$TMP" > "$LIMINE_DEFAULT" || {
+            echo "could not write $LIMINE_DEFAULT; nothing was changed" >&2
+            exit 1; }
+
+        if ! OUT=$(limine-update 2>&1); then
+            cat "$BACKUP" > "$LIMINE_DEFAULT"
+            limine-update >/dev/null 2>&1
+            limine-enroll-config >/dev/null 2>&1
+            echo "limine-update failed, so $LIMINE_DEFAULT was put back: $OUT" >&2
+            exit 1
+        fi
+        if ! OUT=$(limine-enroll-config 2>&1); then
+            cat "$BACKUP" > "$LIMINE_DEFAULT"
+            limine-update >/dev/null 2>&1
+            limine-enroll-config >/dev/null 2>&1
+            echo "limine-enroll-config failed, so $LIMINE_DEFAULT was put back: $OUT" >&2
+            exit 1
+        fi
+        echo "$WANT at the next boot"
+        ;;
+
+    *)
+        usage
+        ;;
+esac

@@ -1,0 +1,10 @@
+# Grant users in group 'wheel' (or current active seat) write permissions to CPU boost nodes
+# Install to /etc/udev/rules.d/ and reload:
+#   sudo cp 99-cpu-boost.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Alternatively, set permissions on boot or via tmpfiles.d
+
+SUBSYSTEM=="cpu", ATTR{cpufreq/boost}=="*", MODE="0664", GROUP="wheel"
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="cpufreq", RUN+="/bin/chmod 0666 /sys/devices/system/cpu/cpufreq/boost"
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="intel_pstate", RUN+="/bin/chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo"

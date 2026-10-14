@@ -1,0 +1,11 @@
+{
+  "name": "Alienware-Control",
+  "author": "Alienware",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["alienware", "power", "turbo", "cpu", "performance"],
+    "description": "Control Alienware CPU Turbo and ACPI Power Profiles (balanced-performance, performance, quiet, cool) directly from Gamescope.",
+    "image": ""
+  }
+}

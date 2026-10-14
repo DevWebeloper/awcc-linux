@@ -1,0 +1,13 @@
+[Unit]
+Description=Alienware Default Profile (Balanced) and Turbo On for Gamescope Session
+Documentation=file:///home/alienware/Projects/alienfx-linux-main
+After=gamescope-session.target
+PartOf=gamescope-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/alienware-session-handler enter-gamescope
+
+[Install]
+WantedBy=gamescope-session.target

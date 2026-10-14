@@ -1,0 +1,6 @@
+{
+  "name": "alienware-control",
+  "version": "1.0.0",
+  "description": "Alienware CPU Turbo and ACPI Power Profiles",
+  "type": "module"
+}
