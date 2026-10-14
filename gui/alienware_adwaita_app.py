@@ -289,23 +289,6 @@ class HardwareManager:
         self.set_profile(target_platform if enable else "balanced")
         return True, f"Power Saver {'ENABLED (Eco mode active)' if enable else 'DISABLED (Balanced mode active)'}"
 
-    def get_ollama_status(self):
-        """Returns True if Ollama service is active."""
-        try:
-            res = subprocess.run(["systemctl", "--user", "is-active", "ollama"], capture_output=True, text=True, check=False)
-            return res.stdout.strip() == "active"
-        except Exception:
-            return False
-
-    def set_ollama_status(self, enable: bool):
-        """Starts/enables or stops/disables Ollama user service."""
-        cmd = ["systemctl", "--user", "enable", "--now", "ollama"] if enable else ["systemctl", "--user", "disable", "--now", "ollama"]
-        try:
-            subprocess.run(cmd, capture_output=True, check=False)
-            return True, f"Ollama service {'started and enabled' if enable else 'stopped and disabled'}"
-        except Exception as e:
-            return False, f"Failed to modify Ollama service: {e}"
-
     def get_telemetry(self):
         """Reads live temperatures and fan RPMs from hwmon."""
         data = {"temps": [], "fans": []}
@@ -581,16 +564,6 @@ class AlienwareAppWindow(Adw.ApplicationWindow):
         self.turbo_switch_row.connect("notify::active", self._on_turbo_switch_toggled)
         quick_group.add(self.turbo_switch_row)
 
-        # 4. Ollama Local AI Service toggle
-        self.ollama_switch_row = Adw.SwitchRow()
-        self.ollama_switch_row.set_title("Ollama Local AI Service")
-        self.ollama_switch_row.set_subtitle(
-            "Disable when not in use to free ~8GB RAM and stop background CPU polling"
-        )
-        self.ollama_switch_row.add_prefix(Gtk.Image.new_from_icon_name("network-server-symbolic"))
-        self.ollama_switch_row.connect("notify::active", self._on_ollama_switch_toggled)
-        quick_group.add(self.ollama_switch_row)
-
         # -------------------------------------------------------------
         # Group 3: All Power Profile Modes
         # -------------------------------------------------------------
@@ -691,25 +664,6 @@ class AlienwareAppWindow(Adw.ApplicationWindow):
             switch_row.set_active(self.hw.get_power_saver())
             self._is_updating_ui = False
 
-    def _on_ollama_switch_toggled(self, switch_row, _param):
-        """User toggled Ollama Local AI Service switch."""
-        if self._is_updating_ui:
-            return
-
-        target_state = switch_row.get_active()
-        state_name = "Starting" if target_state else "Stopping"
-        self.show_toast(f"{state_name} Ollama service...")
-
-        success, msg = self.hw.set_ollama_status(target_state)
-        if success:
-            self.show_toast(msg)
-            self.poll_live_states()
-        else:
-            self.show_toast(f"Failed: {msg}")
-            self._is_updating_ui = True
-            switch_row.set_active(self.hw.get_ollama_status())
-            self._is_updating_ui = False
-
     def _on_turbo_switch_toggled(self, switch_row, _param):
         """User toggled the CPU Turbo Boost switch."""
         if self._is_updating_ui:
@@ -740,7 +694,6 @@ class AlienwareAppWindow(Adw.ApplicationWindow):
         current_profile = self.hw.get_current_profile()
         turbo_boost = self.hw.get_turbo_boost()
         power_saver = self.hw.get_power_saver()
-        ollama_active = self.hw.get_ollama_status()
         telemetry = self.hw.get_telemetry()
 
         # Update Header live timestamp
@@ -800,19 +753,7 @@ class AlienwareAppWindow(Adw.ApplicationWindow):
                 self.turbo_switch_row.set_subtitle("CPU Turbo Boost control not supported on this platform")
                 self.hero_turbo_badge.set_label("TURBO N/A")
 
-            # 4. Update Ollama Service Switch
-            if self.ollama_switch_row.get_active() != ollama_active:
-                self.ollama_switch_row.set_active(ollama_active)
-            if ollama_active:
-                self.ollama_switch_row.set_subtitle(
-                    "Ollama is RUNNING (consuming background RAM/CPU)"
-                )
-            else:
-                self.ollama_switch_row.set_subtitle(
-                    "Ollama is STOPPED (RAM freed, zero CPU usage)"
-                )
-
-            # 3. Update Mode Rows Selection
+            # 4. Update Mode Rows Selection
             for prof, data in self.mode_rows.items():
                 is_active = prof == current_profile
                 data["icon"].set_visible(is_active)

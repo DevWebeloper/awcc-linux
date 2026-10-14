@@ -6,21 +6,6 @@ import decky  # type: ignore
 STATE_FILE = "/home/alienware/.config/alienware-control-state.json"
 SETTINGS_FILE = "/home/alienware/homebrew/settings/Alienware-Control/settings.json"
 
-def _run_user_cmd(cmd_list):
-    """Runs a system command in the user session (UID 1000) context."""
-    try:
-        if os.getuid() == 1000:
-            return subprocess.run(cmd_list, capture_output=True, text=True, check=False)
-        return subprocess.run(
-            ["sudo", "-u", "alienware", "XDG_RUNTIME_DIR=/run/user/1000"] + cmd_list,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except Exception as e:
-        decky.logger.error(f"[Alienware-Control] Error running user command: {e}")
-        return None
-
 class Plugin:
     def _save_state(self, profile: str, turbo: bool, power_saver: bool = False):
         data = {
@@ -121,20 +106,13 @@ class Plugin:
                 except Exception:
                     pass
 
-        # 6. Ollama Local AI Service Status
-        ollama = False
-        res = _run_user_cmd(["systemctl", "--user", "is-active", "ollama"])
-        if res and res.stdout.strip() == "active":
-            ollama = True
-
         return {
             "turbo": turbo,
             "profile": profile,
             "choices": choices,
             "max_freq": max_freq,
             "power_saver": power_saver,
-            "power_profile": power_profile,
-            "ollama": ollama
+            "power_profile": power_profile
         }
 
     async def set_turbo(self, enabled: bool):
@@ -193,12 +171,4 @@ class Plugin:
 
         status = await self.get_status()
         self._save_state(status["profile"], status["turbo"], status.get("power_saver", False))
-        return status
-
-    async def set_ollama(self, enabled: bool):
-        decky.logger.info(f"[Alienware-Control] Setting Ollama service to: {enabled}")
-        cmd = ["systemctl", "--user", "enable", "--now", "ollama"] if enabled else ["systemctl", "--user", "disable", "--now", "ollama"]
-        _run_user_cmd(cmd)
-
-        status = await self.get_status()
         return status

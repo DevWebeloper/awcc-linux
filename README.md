@@ -25,8 +25,6 @@ Provides granular power, thermal, acoustic, and CPU boost controls through both 
   * `Quiet`: Silent operation with acoustic throttling
   * `Cool`: Chassis surface cooling
   * `Power Saver`: Maximum battery and minimum heat
-* **🤖 Ollama / AI Service Switch**:
-  Easily turn off local AI services with a single toggle, freeing up **7–8 GB of RAM** and stopping periodic CPU polling.
 * **📊 Live Telemetry**:
   Real-time CPU and GPU sensor temperature monitoring alongside 4-zone fan RPM indicators (`alienware-wmi` / `dell_smm`).
 * **🕹️ Decky Loader Integration**:

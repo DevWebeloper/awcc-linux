@@ -39,8 +39,7 @@ const Content = () => {
         choices: ["cool", "quiet", "balanced", "balanced-performance", "performance"],
         max_freq: "3.00 GHz",
         power_saver: false,
-        power_profile: "balanced",
-        ollama: false
+        power_profile: "balanced"
     });
     const [loading, setLoading] = window.SP_REACT.useState(false);
     const [msg, setMsg] = window.SP_REACT.useState("");
@@ -85,22 +84,6 @@ const Content = () => {
             if (res) {
                 setStatus(res);
                 setMsg(val ? "Power Saver ENABLED (Eco / Cool mode active)" : "Power Saver DISABLED (Balanced mode active)");
-                setTimeout(() => setMsg(""), 3000);
-            }
-        } catch (e) {
-            console.error(e);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleOllama = async (val) => {
-        setLoading(true);
-        try {
-            const res = await call("set_ollama", val);
-            if (res) {
-                setStatus(res);
-                setMsg(val ? "Ollama service STARTED" : "Ollama service STOPPED & DISABLED");
                 setTimeout(() => setMsg(""), 3000);
             }
         } catch (e) {
@@ -171,19 +154,6 @@ const Content = () => {
                     checked: !!status.turbo,
                     disabled: loading,
                     onChange: (checked) => handleTurbo(checked)
-                })
-            ),
-
-            // Ollama Background AI Service Toggle
-            window.SP_REACT.createElement(window.DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(window.DFL.ToggleField, {
-                    label: "Ollama Local AI Service",
-                    description: status.ollama
-                        ? "Running (Uses ~8GB RAM & periodic CPU polling)"
-                        : "Stopped (Freed 8GB RAM & zero CPU overhead)",
-                    checked: !!status.ollama,
-                    disabled: loading,
-                    onChange: (checked) => handleOllama(checked)
                 })
             ),
 
